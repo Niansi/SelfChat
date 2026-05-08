@@ -7,6 +7,7 @@ struct MessageBubble: View {
     @State private var showGallery = false
     @State private var showFilePreview = false
     @State private var previewURL: URL?
+    @State private var isMediaPressed = false
 
     var body: some View {
         HStack {
@@ -110,10 +111,17 @@ struct MessageBubble: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         }
+        .scaleEffect(isMediaPressed ? 0.92 : 1.0)
+        .animation(.spring(response: 0.2, dampingFraction: 0.5), value: isMediaPressed)
         .onTapGesture {
+            HapticManager.shared.play(.tapStack)
+            isMediaPressed = true
             let idx = message.mediaPaths.firstIndex(of: path) ?? 0
             galleryStartIndex = idx
-            showGallery = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                isMediaPressed = false
+                showGallery = true
+            }
         }
         .fullScreenCover(isPresented: $showGallery) {
             MediaGalleryView(
@@ -126,42 +134,11 @@ struct MessageBubble: View {
     }
 
     private func mediaStackView(mediaPaths: [String], names: [String], allPaths: [String]) -> some View {
-        ZStack {
-            ForEach(Array(mediaPaths.prefix(3).enumerated().reversed()), id: \.offset) { idx, path in
-                let name = allPaths.firstIndex(of: path).flatMap { i in
-                    i < message.fileNames.count ? message.fileNames[i] : nil
-                } ?? ""
-                let url = MediaStore.shared.fileURL(for: path)
-                ZStack {
-                    if isVideo(name: name) {
-                        VideoThumbnailView(url: url)
-                            .frame(width: 180, height: 180)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    } else if let img = UIImage(contentsOfFile: url.path) {
-                        Image(uiImage: img)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 180, height: 180)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                }
-                .rotationEffect(.degrees(Double(idx) * 3.5 - 3.5))
-                .offset(x: CGFloat(idx) * 4, y: CGFloat(idx) * -4)
-                .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 2)
-            }
-
-            if mediaPaths.count > 3 {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.black.opacity(0.45))
-                    .frame(width: 180, height: 180)
-                Text("+\(mediaPaths.count - 3)")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 194, height: 194)
-        .onTapGesture {
-            galleryStartIndex = 0
+        CardStackView(
+            mediaPaths: mediaPaths,
+            names: names
+        ) { tappedIndex in
+            galleryStartIndex = tappedIndex
             showGallery = true
         }
         .fullScreenCover(isPresented: $showGallery) {
@@ -241,6 +218,7 @@ struct MediaGalleryView: View {
     @State private var currentIndex: Int
     @State private var dragOffset: CGSize = .zero
     @State private var isDragging = false
+    @State private var isAppeared = false
 
     private let dismissThreshold: CGFloat = 120
     private let dismissVelocityThreshold: CGFloat = 600
@@ -267,10 +245,12 @@ struct MediaGalleryView: View {
 
     var body: some View {
         ZStack {
-            Color.black
-                .opacity(backgroundOpacity)
+            // 毛玻璃背景
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .opacity(backgroundOpacity * (isAppeared ? 1 : 0))
                 .ignoresSafeArea()
-                .animation(.easeOut(duration: 0.1), value: dragOffset.height)
+                .animation(.easeOut(duration: 0.15), value: dragOffset.height)
 
             TabView(selection: $currentIndex) {
                 ForEach(Array(paths.enumerated()), id: \.offset) { idx, path in
@@ -280,10 +260,12 @@ struct MediaGalleryView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
-            .offset(y: dragOffset.height)
-            .scaleEffect(max(0.85, 1 - abs(dragOffset.height) / 1000))
+            .offset(y: dampedOffset)
+            .scaleEffect(isAppeared ? scaleEffect : 0.88)
+            .rotationEffect(.degrees(dragRotation))
+            .opacity(isAppeared ? 1 : 0)
             .gesture(
-                DragGesture(minimumDistance: 10)
+                DragGesture(minimumDistance: 15)
                     .onChanged { value in
                         if value.translation.height > 0 || isDragging {
                             isDragging = true
@@ -292,18 +274,28 @@ struct MediaGalleryView: View {
                     }
                     .onEnded { value in
                         isDragging = false
-                        let velocity = value.predictedEndTranslation.height - value.translation.height
-                        if value.translation.height > dismissThreshold || velocity > dismissVelocityThreshold {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        let velocity = value.velocity.height
+                        if dragOffset.height > dismissThreshold || velocity > dismissVelocityThreshold {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                 isPresented = false
                             }
                         } else {
-                            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                            withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) {
                                 dragOffset = .zero
                             }
                         }
                     }
             )
+            .onTapGesture(count: 2) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isPresented = false
+                }
+            }
+            .onAppear {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    isAppeared = true
+                }
+            }
 
             VStack {
                 HStack {
@@ -327,7 +319,7 @@ struct MediaGalleryView: View {
                     if paths.count > 1 {
                         Text("\(currentIndex + 1) / \(paths.count)")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(.primary.opacity(0.8))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 5)
                             .background(.ultraThinMaterial, in: Capsule())
@@ -339,6 +331,18 @@ struct MediaGalleryView: View {
             }
             .opacity(backgroundOpacity)
         }
+    }
+
+    private var dampedOffset: CGFloat {
+        dragOffset.height * 0.55
+    }
+
+    private var scaleEffect: CGFloat {
+        max(0.82, 1 - abs(dragOffset.height) / 600)
+    }
+
+    private var dragRotation: Double {
+        Double(dragOffset.width / 30)
     }
 
     @ViewBuilder

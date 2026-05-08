@@ -11,6 +11,7 @@ struct InputBar: View {
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var isSending = false
     @Namespace private var glassNamespace
 
     private var canSend: Bool {
@@ -92,6 +93,12 @@ struct InputBar: View {
 
             if canSend {
                 Button {
+                    withAnimation(.spring(response: 0.2, dampingFraction: 0.5)) {
+                        isSending = true
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        isSending = false
+                    }
                     sendAll()
                 } label: {
                     Image(systemName: "arrow.up")
@@ -101,6 +108,7 @@ struct InputBar: View {
                         .background(Color.green, in: Circle())
                 }
                 .buttonStyle(.plain)
+                .scaleEffect(isSending ? 0.75 : 1.0)
                 .transition(.scale.combined(with: .opacity))
             }
         }
@@ -208,6 +216,9 @@ struct InputBar: View {
     }
 
     private func sendAll() {
+        SoundManager.shared.playSendSound()
+        HapticManager.shared.play(.sendMessage)
+
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var messages: [Message] = []
 
