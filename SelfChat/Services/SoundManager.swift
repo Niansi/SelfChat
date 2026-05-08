@@ -7,7 +7,10 @@ final class SoundManager {
     private init() {}
 
     func playSendSound() {
-        // 1307 = 邮件发送音效，清脆的"嗖"声
-        AudioServicesPlaySystemSound(1307)
+        // 1016 = 短信发送成功音效（清脆的"嗖"声）
+        // 1117 = 锁定声（另一种清脆音）
+        // 1118 = 解锁声
+        // 尝试 1016 获取更接近"嗖"声的效果
+        AudioServicesPlaySystemSound(1016)
     }
 }

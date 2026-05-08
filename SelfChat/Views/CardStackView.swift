@@ -8,43 +8,69 @@ struct CardStackView: View {
     @State private var currentIndex = 0
     @State private var dragOffset: CGSize = .zero
     @State private var dragRotation: Double = 0
-    @State private var hasWiggled = false
-    @State private var wigglePhase = false
+    @State private var isWiggling = false
+    @State private var transitioningIndex: Int?
 
-    private let swipeThreshold: CGFloat = 80
-    private let velocityThreshold: CGFloat = 500
+    @Environment(\.scenePhase) private var scenePhase
+
+    private let swipeThreshold: CGFloat = 60
+    private let velocityThreshold: CGFloat = 400
 
     var body: some View {
         ZStack {
-            ForEach(visibleIndices.reversed(), id: \.self) { idx in
+            ForEach(displayIndices, id: \.self) { idx in
                 cardView(at: idx)
             }
         }
         .frame(width: 194, height: 194)
-        .onAppear {
-            triggerWiggle()
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            if oldPhase != .active && newPhase == .active {
+                // 从非活跃状态回到活跃，触发微动
+                triggerWiggle()
+            } else if newPhase != .active {
+                // 离开活跃状态，恢复整齐
+                isWiggling = false
+            }
         }
-        .onChange(of: mediaPaths.count) { _, _ in
-            currentIndex = 0
-            hasWiggled = false
+        .onAppear {
             triggerWiggle()
         }
     }
 
-    private var visibleIndices: [Int] {
+    private var displayIndices: [Int] {
+        var indices: [Int] = []
         let start = currentIndex
         let end = min(start + 3, mediaPaths.count)
-        return Array(start..<end)
+        for i in start..<end {
+            indices.append(i)
+        }
+        if let transitioningIndex {
+            indices.append(transitioningIndex)
+        }
+        return indices
+    }
+
+    private func depth(for idx: Int) -> Int {
+        if let transitioningIndex, idx == transitioningIndex {
+            return 3
+        }
+        let d = idx - currentIndex
+        return max(0, min(d, 2))
+    }
+
+    private func isTopCard(_ idx: Int) -> Bool {
+        idx == currentIndex
     }
 
     @ViewBuilder
     private func cardView(at idx: Int) -> some View {
-        let isTop = idx == currentIndex
-        let depth = idx - currentIndex
-        let baseScale = 1.0 - Double(depth) * 0.05
-        let baseRotation = Double(depth) * 3.5 - 3.5 + (wigglePhase && depth > 0 ? wiggleOffset(for: depth) : 0)
-        let baseOffsetX = CGFloat(depth) * 4 + (wigglePhase && depth > 0 ? CGFloat(wiggleOffset(for: depth) * 2) : 0)
-        let baseOffsetY = CGFloat(depth) * -4
+        let isTop = isTopCard(idx)
+        let d = depth(for: idx)
+        let baseScale = 1.0 - Double(d) * 0.05
+        let wiggleOffset = isWiggling && d > 0 ? wiggleRotation(for: d) : 0.0
+        let baseRotation = Double(d) * 3.5 - 3.5 + wiggleOffset
+        let baseOffsetX = CGFloat(d) * 4 + CGFloat(wiggleOffset * 0.5)
+        let baseOffsetY = CGFloat(d) * -4
 
         let url = MediaStore.shared.fileURL(for: mediaPaths[idx])
         let name = names[safe: idx] ?? ""
@@ -68,70 +94,84 @@ struct CardStackView: View {
             x: baseOffsetX + (isTop ? dragOffset.width : 0),
             y: baseOffsetY + (isTop ? dragOffset.height * 0.3 : 0)
         )
-        .scaleEffect(isTop && dragOffset != .zero ? max(0.92, 1.0 - Double(abs(dragOffset.width)) / 800.0) : baseScale)
-        .opacity(isTop && abs(dragOffset.width) > 20 ? 1.0 - Double(abs(dragOffset.width)) / 300.0 : 1.0)
-        .zIndex(Double(mediaPaths.count - idx))
-        .animation(.spring(response: 0.4, dampingFraction: 0.75), value: currentIndex)
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: wigglePhase)
+        .scaleEffect(
+            isTop && dragOffset != .zero
+                ? max(0.94, 1.0 - Double(abs(dragOffset.width)) / 600.0)
+                : baseScale
+        )
+        .zIndex(isTop ? 100 : Double(mediaPaths.count - d))
+        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: currentIndex)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isWiggling)
+        .animation(.spring(response: 0.4, dampingFraction: 0.75), value: transitioningIndex)
         .gesture(
-            isTop ? DragGesture()
-                .onChanged { value in
-                    dragOffset = value.translation
-                    dragRotation = Double(value.translation.width / 20)
-                }
-                .onEnded { value in
-                    let velocity = value.velocity.width
-                    if value.translation.width > swipeThreshold || velocity > velocityThreshold {
-                        swipeAway(direction: 1)
-                    } else if value.translation.width < -swipeThreshold || velocity < -velocityThreshold {
-                        swipeAway(direction: -1)
-                    } else {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                            dragOffset = .zero
-                            dragRotation = 0
+            isTop && transitioningIndex == nil
+                ? DragGesture()
+                    .onChanged { value in
+                        dragOffset = value.translation
+                        dragRotation = Double(value.translation.width / 20)
+                    }
+                    .onEnded { value in
+                        let velocity = value.velocity.width
+                        if value.translation.width > swipeThreshold || velocity > velocityThreshold {
+                            swipeToBottom(direction: 1)
+                        } else if value.translation.width < -swipeThreshold || velocity < -velocityThreshold {
+                            swipeToBottom(direction: -1)
+                        } else {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                                dragOffset = .zero
+                                dragRotation = 0
+                            }
                         }
                     }
-                }
-            : nil
+                : nil
         )
         .onTapGesture {
-            if isTop {
+            if isTop && transitioningIndex == nil {
                 HapticManager.shared.play(.tapStack)
                 onTap(idx)
             }
         }
     }
 
-    private func swipeAway(direction: CGFloat) {
+    private func swipeToBottom(direction: CGFloat) {
         HapticManager.shared.play(.swipeStack)
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-            dragOffset = CGSize(width: direction * 500, height: dragOffset.height)
-            dragRotation = Double(direction * 25)
+        let outgoing = currentIndex
+        transitioningIndex = outgoing
+
+        // 让顶层卡片移动到堆栈底部位置
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+            dragOffset = CGSize(width: direction * 15, height: 15)
+            dragRotation = Double(direction * 3)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             currentIndex = (currentIndex + 1) % mediaPaths.count
-            dragOffset = .zero
-            dragRotation = 0
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                transitioningIndex = nil
+                dragOffset = .zero
+                dragRotation = 0
+            }
         }
     }
 
     private func triggerWiggle() {
-        guard !hasWiggled else { return }
-        hasWiggled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                wigglePhase = true
+        guard mediaPaths.count > 1 else { return }
+        // 先恢复整齐，再微动，形成自然过渡
+        isWiggling = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                isWiggling = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
-                    wigglePhase = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) {
+                    isWiggling = false
                 }
             }
         }
     }
 
-    private func wiggleOffset(for depth: Int) -> Double {
-        let offsets: [Double] = [0, 2.5, -1.5]
+    private func wiggleRotation(for depth: Int) -> Double {
+        let offsets: [Double] = [0, 3.5, -2.5]
         return offsets[safe: depth] ?? 0
     }
 

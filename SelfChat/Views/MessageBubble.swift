@@ -260,14 +260,16 @@ struct MediaGalleryView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
-            .offset(y: dampedOffset)
+            .offset(y: rubberBandedOffset)
             .scaleEffect(isAppeared ? scaleEffect : 0.88)
             .rotationEffect(.degrees(dragRotation))
             .opacity(isAppeared ? 1 : 0)
-            .gesture(
-                DragGesture(minimumDistance: 15)
+            // 使用 simultaneousGesture 让垂直下滑和 TabView 水平滑动共存
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 5)
                     .onChanged { value in
-                        if value.translation.height > 0 || isDragging {
+                        let isVertical = abs(value.translation.height) >= abs(value.translation.width)
+                        if isVertical && value.translation.height > 0 {
                             isDragging = true
                             dragOffset = value.translation
                         }
@@ -276,11 +278,17 @@ struct MediaGalleryView: View {
                         isDragging = false
                         let velocity = value.velocity.height
                         if dragOffset.height > dismissThreshold || velocity > dismissVelocityThreshold {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            // 跟手关闭：先让视图继续移动到手指释放的位置，然后动画关闭
+                            let finalOffset = dragOffset.height + velocity * 0.15
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                dragOffset = CGSize(width: dragOffset.width, height: finalOffset)
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                                 isPresented = false
+                                dragOffset = .zero
                             }
                         } else {
-                            withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) {
+                            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
                                 dragOffset = .zero
                             }
                         }
@@ -333,16 +341,22 @@ struct MediaGalleryView: View {
         }
     }
 
-    private var dampedOffset: CGFloat {
-        dragOffset.height * 0.55
+    private var rubberBandedOffset: CGFloat {
+        let raw = dragOffset.height
+        let limit: CGFloat = 80
+        if raw <= limit {
+            return raw
+        }
+        let excess = raw - limit
+        return limit + excess * 0.4
     }
 
     private var scaleEffect: CGFloat {
-        max(0.82, 1 - abs(dragOffset.height) / 600)
+        max(0.78, 1 - abs(dragOffset.height) / 500)
     }
 
     private var dragRotation: Double {
-        Double(dragOffset.width / 30)
+        Double(dragOffset.width / 25)
     }
 
     @ViewBuilder
